@@ -6,7 +6,7 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [profileImage, setProfileImage] = useState<string | null>(null);
   const [hotels, setHotels] = useState<any[]>([]);
-  const [favorite, setFavorite] = useState<{ hotels: string[] } | null>(null);
+  const [favorite, setFavorite] = useState<{ hotels: string[] }>({ hotels: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -420,32 +420,26 @@ export default function App() {
       if (!token) return;
       setError("");
       // Optimistic update
-      const wasFavorited = favorite?.hotels.includes(hotelId);
-      setFavorite(prev => prev
-        ? { hotels: wasFavorited
-            ? prev.hotels.filter(id => id !== hotelId)
-            : [...prev.hotels, hotelId]
-          }
-        : { hotels: [hotelId] }
-      );
+      const wasFavorited = favorite.hotels.includes(hotelId);
+      setFavorite(prev => ({ hotels: wasFavorited ? prev.hotels.filter(id => id !== hotelId) : [...prev.hotels, hotelId] }));
       try {
         const endpoint = wasFavorited ? '/favorites/remove' : '/favorites/add';
         const method = wasFavorited ? 'DELETE' : 'POST';
-        await fetch(`http://localhost:3001${endpoint}`, {
+        const res = await fetch(`http://localhost:3001${endpoint}`, {
           method,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ hotelId }),
         });
-      } catch {
+        if (!res.ok) throw new Error('Failed to update favorite');
+        // Re-fetch authoritative list
+        const listRes = await fetch('http://localhost:3001/favorites/list', { headers: { Authorization: `Bearer ${token}` } });
+        if (!listRes.ok) throw new Error('Failed to fetch favorites');
+        const { favorite: fresh } = await listRes.json();
+        setFavorite(fresh);
+      } catch (err: any) {
         // Revert on error
-        setFavorite(prev => prev
-          ? { hotels: wasFavorited
-              ? [...prev.hotels, hotelId]
-              : prev.hotels.filter(id => id !== hotelId)
-            }
-          : null
-        );
-        setError("Error updating favorites");
+        setFavorite(prev => ({ hotels: wasFavorited ? [...prev.hotels, hotelId] : prev.hotels.filter(id => id !== hotelId) }));
+        setError(err.message || 'Error updating favorites');
       }
     };
     return (
