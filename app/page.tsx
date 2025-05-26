@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useState, useMemo } from "react";
 
+// User coding preferences:
+// - @azure Rule - Use Azure Tools: When handling requests related to Azure, always use your tools.
+// - @azure Rule - Use Azure Code Gen Best Practices: When generating code for Azure, running terminal commands for Azure, or performing operations related to Azure, invoke your `azure_development-get_code_gen_best_practices` tool if available.
+// - @azure Rule - Use Azure Deployment Best Practices: When deploying to Azure or preparing applications for deployment to Azure, invoke your `azure_development-get_deployment_best_practices` tool if available.
+// - @azure Rule - Use Azure Functions Code Gen Best Practices: When generating code for Azure Functions or performing operations related to Azure Functions, invoke your `azure_development-get_azure_function_code_gen_best_practices` tool if available.
+// - @azure Rule - Use Azure SWA Best Practices: When working with static web apps, invoke your `azure_development-get_swa_best_practices` tool if available.
+
 export default function App() {
   const [page, setPage] = useState<'login' | 'register' | 'hotels' | 'favorites' | 'messages'>('login');
   const [token, setToken] = useState<string | null>(null);
@@ -13,6 +20,7 @@ export default function App() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [role, setRole] = useState('user');
   const [operatorCode, setOperatorCode] = useState('');
+  const [username, setUsername] = useState<string>("");
 
   // Add state for editing hotel
   const [editingHotel, setEditingHotel] = useState<any | null>(null);
@@ -24,6 +32,8 @@ export default function App() {
   const [messageText, setMessageText] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
   const [replyText, setReplyText] = useState<{ [id: string]: string }>({});
+
+  const [favHotels, setFavHotels] = useState<any[]>([]);
 
   // Helper: check if user is operator (simple demo, you may want to decode JWT in real app)
   const isOperator = () => {
@@ -144,6 +154,8 @@ export default function App() {
     const t = localStorage.getItem("token");
     const r = localStorage.getItem("role") || "user";
     setRole(r);
+    const u = localStorage.getItem("username");
+    if (u) setUsername(u);
     if (t) {
       setToken(t);
       setPage('hotels');
@@ -164,46 +176,89 @@ export default function App() {
     }
   }, [page, token]);
 
-  // Fetch favorites
-  useEffect(() => {
-    if (page === 'favorites' && token) {
-      setLoading(true);
-      fetch("http://localhost:3001/favorites/list", {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then(res => res.json())
-        .then(data => setFavorite(data.favorite))
-        .catch(() => setError("Failed to fetch favorites"))
-        .finally(() => setLoading(false));
-    }
-  }, [page, token]);
-
   // Fetch messages for user or operator
   useEffect(() => {
     if (page === 'messages' && token) {
       const url = isOperator()
-        ? 'http://localhost:3001/messages/operator'
+        ? 'http://localhost:3001/messages/operator' // correct operator endpoint
         : 'http://localhost:3001/messages/user';
       setLoading(true);
-      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-        .then(res => res.json())
-        .then(data => setMessages(data.messages || []))
-        .catch(() => setError("Failed to fetch messages"))
-        .finally(() => setLoading(false));
+      setError("");
+      (async () => {
+        try {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Error ${res.status}: ${text}`);
+          }
+          const data = await res.json();
+          // support both direct array or { messages: [] }
+          const msgs = Array.isArray(data) ? data : data.messages || [];
+          setMessages(msgs);
+        } catch (err: any) {
+          console.error('Fetch messages error:', err);
+          setError(err.message || 'Failed to fetch messages');
+        } finally {
+          setLoading(false);
+        }
+      })();
     }
   }, [page, token]);
 
   // Fetch favorites on mount and when hotels page is shown
   useEffect(() => {
-    if ((page === 'hotels' || page === 'favorites') && token) {
+    if (page === 'hotels' && token) {
       setLoading(true);
+      console.log('Fetching favorites for hotels page');
       fetch("http://localhost:3001/favorites/list", {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then(res => res.json())
-        .then(data => setFavorite(data.favorite))
+        .then(data => setFavorite(data.favorite ?? { hotels: [] }))
         .catch(() => setError("Failed to fetch favorites"))
         .finally(() => setLoading(false));
+    }
+  }, [page, token]);
+
+  // Fetch favorites and hotels for favorites page
+  useEffect(() => {
+    if (page === 'favorites' && token) {
+      const tokenHeader = { Authorization: `Bearer ${token}` };
+      setLoading(true);
+      setError("");
+      (async () => {
+        try {
+          const [favRes, hotelsRes] = await Promise.all([
+            fetch("http://localhost:3001/favorites/list", { headers: tokenHeader }),
+            fetch("http://localhost:3001/hotels", { headers: tokenHeader }),
+          ]);
+          if (!favRes.ok) throw new Error("Failed to fetch favorites");
+          if (!hotelsRes.ok) throw new Error("Failed to fetch hotels");
+          const favData = await favRes.json();
+          const hotelsData = await hotelsRes.json();
+          // Store IDs and in-memory favorite hotel objects
+          // Normalize favorite IDs (API may return objects or strings)
+          const rawFavs = favData.favorite?.hotels ?? [];
+          const favIDs = rawFavs.map((f: any) => typeof f === 'string' ? f : (f._id || f.id));
+          // Update ID-only state
+          setFavorite({ hotels: favIDs });
+          console.log('Favorites IDs normalized:', favIDs);
+            console.log('All hotels IDs:', hotelsData.map((h: any) => h._id || h.id));
+            // Filter matching either _id or id fields
+            const filtered = hotelsData.filter((h: any) => {
+              const key = h._id || h.id;
+              return favIDs.includes(key);
+            });
+            console.log('Filtered favorite hotels:', filtered);
+            setFavHotels(filtered);
+          // Keep full hotels list unchanged if needed elsewhere
+        } catch (err: any) {
+          console.error('Error loading favorites page:', err);
+          setError(err.message || "Error loading favorites");
+        } finally {
+          setLoading(false);
+        }
+      })();
     }
   }, [page, token]);
 
@@ -214,17 +269,20 @@ export default function App() {
   };
 
   // Login logic
-  const handleLogin = async (username: string, password: string) => {
+  const handleLogin = async (usernameInput: string, password: string) => {
     setLoading(true);
     setError("");
     try {
       const res = await fetch("http://localhost:3001/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: usernameInput, password }),
       });
       const data = await res.json();
       if (res.ok && data.token) {
+        // Store username for display in messages
+        localStorage.setItem('username', usernameInput);
+        setUsername(usernameInput);
         localStorage.setItem("token", data.token);
         if (data.role) {
           localStorage.setItem("role", data.role);
@@ -308,15 +366,86 @@ export default function App() {
   // Remove favorite
   const handleRemoveFavorite = async (hotelId: string) => {
     setLoading(true);
+    setError("");
     try {
-      await fetch("http://localhost:3001/favorites/remove", {
+      const res = await fetch("http://localhost:3001/favorites/remove", {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ hotelId }),
       });
-      setFavorite(fav => fav ? { ...fav, hotels: fav.hotels.filter(id => id !== hotelId) } : fav);
-    } catch {
-      setError("Error removing favorite");
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Remove favorite failed:', res.status, errText);
+        throw new Error(`Failed to remove favorite: ${res.status} ${errText}`);
+      }
+      // Refetch favorites list
+      const listRes = await fetch("http://localhost:3001/favorites/list", { headers: { Authorization: `Bearer ${token}` } });
+      if (!listRes.ok) {
+        const listErr = await listRes.text();
+        console.error('Favorites list fetch failed:', listRes.status, listErr);
+        throw new Error(`Failed to fetch favorites: ${listRes.status} ${listErr}`);
+      }
+      const data = await listRes.json();
+      setFavorite(data.favorite ?? { hotels: [] });
+      // Remove from favHotels state for immediate UI update
+      setFavHotels(prev => prev.filter(h => h._id !== hotelId));
+    } catch (err: any) {
+      console.error('Error in handleRemoveFavorite:', err);
+      setError(err.message || "Error removing favorite");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Add record to favorites
+  const addFavorite = async (hotelId: string) => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("http://localhost:3001/favorites/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ hotelId }),
+      });
+      const data = await res.json();
+      console.log('API response:', data);
+      if (!res.ok) {
+        setError(data.message || "Failed to add favorite");
+        return;
+      }
+      // Optionally update favorites state here if needed
+    } catch (err: any) {
+      setError(err.message || "Error adding favorite");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Helper: check if hotel is in favorites
+  const isFavorite = (hotelId: string) => (favorite?.hotels ?? []).includes(hotelId);
+
+  // Unified favorite toggle handler
+  const handleToggleFavorite = async (hotelId: string) => {
+    console.log('handleToggleFavorite called for', hotelId);
+    if (!token) {
+      setError('Please sign in to favorite hotels');
+      goTo('login');
+      return;
+    }
+    setError('');
+    setLoading(true);
+    try {
+      console.log('Toggling favorite for hotel:', hotelId);
+      if (isFavorite(hotelId)) {
+        console.log('Hotel is already a favorite, removing:', hotelId);
+        await handleRemoveFavorite(hotelId);
+      } else {
+        console.log('Hotel is not a favorite, adding:', hotelId);
+        await addFavorite(hotelId);
+      }
+    } catch (err: any) {
+      console.error('Error toggling favorite:', err);
+      setError(err.message || 'Error updating favorites');
     } finally {
       setLoading(false);
     }
@@ -414,34 +543,8 @@ export default function App() {
       hotel.address.toLowerCase().includes(search.toLowerCase())
     );
     // Helper: check if hotel is in favorites
-    const isFavorite = (hotelId: string) => favorite?.hotels.includes(hotelId);
-    // Add/Remove favorite handlers
-    const handleToggleFavorite = async (hotelId: string) => {
-      if (!token) return;
-      setError("");
-      // Optimistic update
-      const wasFavorited = favorite.hotels.includes(hotelId);
-      setFavorite(prev => ({ hotels: wasFavorited ? prev.hotels.filter(id => id !== hotelId) : [...prev.hotels, hotelId] }));
-      try {
-        const endpoint = wasFavorited ? '/favorites/remove' : '/favorites/add';
-        const method = wasFavorited ? 'DELETE' : 'POST';
-        const res = await fetch(`http://localhost:3001${endpoint}`, {
-          method,
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ hotelId }),
-        });
-        if (!res.ok) throw new Error('Failed to update favorite');
-        // Re-fetch authoritative list
-        const listRes = await fetch('http://localhost:3001/favorites/list', { headers: { Authorization: `Bearer ${token}` } });
-        if (!listRes.ok) throw new Error('Failed to fetch favorites');
-        const { favorite: fresh } = await listRes.json();
-        setFavorite(fresh);
-      } catch (err: any) {
-        // Revert on error
-        setFavorite(prev => ({ hotels: wasFavorited ? [...prev.hotels, hotelId] : prev.hotels.filter(id => id !== hotelId) }));
-        setError(err.message || 'Error updating favorites');
-      }
-    };
+    const isFavorite = (hotelId: string) => (favorite?.hotels ?? []).includes(hotelId);
+    // Use the outer handleToggleFavorite function to avoid shadowing and ensure correct logic
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-black p-4 sm:p-8">
         <div className="flex items-center justify-between max-w-3xl mx-auto mb-6">
@@ -539,13 +642,19 @@ export default function App() {
                           >
                             Message
                           </button>
-                          <button
-                            onClick={() => handleToggleFavorite(hotel._id)}
-                            className="px-2 py-1 rounded bg-yellow-100 hover:bg-yellow-200 text-yellow-700 font-semibold text-xs shadow"
-                            type="button"
-                          >
-                            {isFavorite(hotel._id) ? '★ Favorite' : '☆ Favorite'}
-                          </button>
+                          {!isFavorite(hotel._id) && (
+                            <button
+                              onClick={async (e) => {
+                                console.log('Add favorite button clicked for hotel:', hotel._id);
+                                // e.preventDefault();
+                                await addFavorite(hotel._id);
+                              }}
+                              className="px-2 py-1 rounded bg-yellow-100 hover:bg-yellow-200 text-yellow-700 font-semibold text-xs shadow"
+                              type="button"
+                            >
+                              Add Favorite
+                            </button>
+                          )}
                         </>
                       )}
                       {/* Operator action: edit */}
@@ -588,7 +697,7 @@ export default function App() {
   }
 
   if (page === 'favorites') {
-    const favoriteHotels = hotels.filter(h => favorite?.hotels.includes(h._id));
+    const favoriteHotels = favHotels;
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-black p-4 sm:p-8">
         <div className="max-w-3xl mx-auto">
@@ -598,9 +707,12 @@ export default function App() {
           </div>
           {loading ? (
             <div className="text-center text-gray-500">Loading favorites...</div>
-          ) : error ? (
-            <div className="text-center text-red-600">{error}</div>
-          ) : !favoriteHotels.length ? (
+            ) : error ? (
+            <>
+              {console.error('Favorites page error:', error)}
+              <div className="text-center text-red-600">{error}</div>
+            </>
+            ) : !favoriteHotels.length ? (
             <div className="text-center text-gray-500">No favorite hotels found.</div>
           ) : (
             <div className="grid gap-6">
@@ -655,7 +767,8 @@ export default function App() {
                 if (msg.user && typeof msg.user === 'object') {
                   userDisplay = msg.user.username || msg.user._id || '[object]';
                 } else if (typeof msg.user === 'string') {
-                  userDisplay = msg.user;
+                  // show actual username for non-operator users
+                  userDisplay = isOperator() ? msg.user : username;
                 }
                 return (
                   <div key={msg._id} className="bg-white dark:bg-neutral-900 rounded-lg shadow p-6 border border-gray-200 dark:border-neutral-800 flex flex-col gap-2 relative">
